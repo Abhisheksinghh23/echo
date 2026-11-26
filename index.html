@@ -1,0 +1,99 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Echo: a small Shazam-style engine you can watch work</title>
+<meta name="description" content="Add your own songs, play a clip, and watch audio turn into fingerprints and find a match. Runs fully in your browser.">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<header>
+  <div class="wrap">
+    <h1>Echo<span class="dot">.</span></h1>
+    <p class="lead">A small Shazam-style engine that shows its work. Add songs, play a clip, and watch sound become fingerprints and find its match. Everything runs in your browser. Nothing is uploaded.</p>
+    <p class="note">Matches clips against the songs <b>you</b> add (plus 3 built-in demo tracks). No humming, no giant catalogue.</p>
+  </div>
+</header>
+<main class="wrap">
+  <section class="card" id="library">
+    <h2>1. Library <span class="step">songs the engine knows</span></h2>
+    <div id="songs" class="songs"></div>
+    <div class="row">
+      <label class="btn">Add songs<input id="addSongs" type="file" accept="audio/*" multiple hidden></label>
+      <span id="libStatus" class="muted"></span>
+    </div>
+    <p class="muted small">Added songs are kept in this browser (IndexedDB) as 8 kHz mono audio so they survive a reload. Delete them any time. MP3, WAV, M4A, OGG, FLAC work if your browser can play them. Songs longer than 8 minutes are trimmed.</p>
+  </section>
+
+  <section class="card" id="query">
+    <h2>2. Make a query <span class="step">a short noisy clip</span></h2>
+    <div class="tabs">
+      <button class="tab on" data-tab="cut">Cut from a song</button>
+      <button class="tab" data-tab="file">Upload a clip</button>
+      <button class="tab" data-tab="mic">Microphone</button>
+    </div>
+    <div id="tab-cut" class="pane">
+      <div class="grid">
+        <label>Song <select id="cutSong"></select></label>
+        <label>Start: <b id="cutStartV">0:10</b> <input id="cutStart" type="range" min="0" max="100" value="10" step="0.5"></label>
+        <label>Length: <b id="cutLenV">6</b> s <input id="cutLen" type="range" min="2" max="15" value="6" step="1"></label>
+        <label>Noise (clip vs. static): <b id="cutNoiseV">0 dB</b> <input id="cutNoise" type="range" min="-10" max="30" value="30" step="1"></label>
+      </div>
+      <p class="muted small">Noise slider: 30 dB is a clean clip, 0 dB means static as loud as the music, -10 dB means static louder than the music.</p>
+      <div class="row"><button id="cutPlay" class="btn ghost">Play clip</button><button id="cutGo" class="btn primary">Identify this clip</button></div>
+    </div>
+    <div id="tab-file" class="pane" hidden>
+      <label class="btn">Choose an audio clip<input id="clipFile" type="file" accept="audio/*" hidden></label>
+      <span id="clipName" class="muted"></span>
+      <p class="muted small">Try a phone recording of a song you added. Longer than 20 s is trimmed to the first 20 s.</p>
+    </div>
+    <div id="tab-mic" class="pane" hidden>
+      <div class="row"><button id="micGo" class="btn primary">Listen for 8 seconds</button><span id="micStatus" class="muted"></span></div>
+      <canvas id="live" width="900" height="140"></canvas>
+      <p class="muted small">Play a song you added from another device near the mic. Echo asks for microphone access only when you press the button, and does not store the recording.</p>
+    </div>
+  </section>
+
+  <section class="card" id="result" hidden>
+    <h2>3. What the engine saw</h2>
+    <div id="verdict" class="verdict"></div>
+    <div class="stats" id="stats"></div>
+
+    <h3>Step 1. Spectrogram of your clip, loudest points circled</h3>
+    <p class="muted small">Time runs left to right, pitch bottom to top (0 to 4 kHz). Bright means loud. Each circle is a <i>peak</i>: the loudest point in its neighbourhood. Static adds some peaks but the music's own peaks survive.</p>
+    <canvas id="cQuery" width="1000" height="260"></canvas>
+
+    <h3>Step 2. Peaks become pairs, pairs become hashes</h3>
+    <p class="muted small">Each peak is paired with a few peaks just after it. A pair is stored as (pitch 1, pitch 2, gap in time), one number. Gaps, not clock times, so a clip can start anywhere. Lines show a sample of pairs.</p>
+    <canvas id="cPairs" width="1000" height="200"></canvas>
+
+    <h3>Step 3. Every hash votes for a song and a position</h3>
+    <p class="muted small">Each hash is looked up in the library. A hit says "this pair occurs in song S at time T". If the clip really comes from S, all its hits agree on one offset (song time minus clip time). Wrong songs only collect scattered votes.</p>
+    <div class="two">
+      <div><div class="cap">Votes per song</div><div id="bars"></div></div>
+      <div><div class="cap">Votes by offset for the top song <span id="offLabel" class="muted"></span></div><canvas id="cHist" width="520" height="200"></canvas></div>
+    </div>
+
+    <h3>Step 4. Where the clip sits in the song</h3>
+    <p class="muted small">The matching song with the clip's window marked. Green dots are the song peaks that matched your clip's pairs at the winning offset.</p>
+    <canvas id="cSong" width="1000" height="220"></canvas>
+  </section>
+
+  <section class="card">
+    <h2>How it works</h2>
+    <ol class="how">
+      <li><b>Downsample</b> to 8 kHz mono. Songs live below 4 kHz for fingerprinting purposes.</li>
+      <li><b>Spectrogram</b>: 1024-sample Hann windows, 256-sample hop, my own radix-2 FFT (no libraries).</li>
+      <li><b>Peaks</b>: keep points that are the loudest within &plusmn;10 pitch bins and &plusmn;8 frames and within 62 dB of the loudest point.</li>
+      <li><b>Pairs</b>: each peak pairs with up to 6 later peaks, 2 to 60 frames ahead. Hash = pitch1 (9 bits) + pitch2 (9 bits) + gap (6 bits).</li>
+      <li><b>Index</b>: a hash table from hash to (song, time).</li>
+      <li><b>Match</b>: histogram the offsets of all hits per song. A verdict needs at least 7 aligned votes and twice the runner-up's votes.</li>
+    </ol>
+    <p class="muted small">This is the classic landmark method (Wang, 2003). Open implementations exist, for example <a href="https://github.com/worldveil/dejavu">dejavu</a>, <a href="https://github.com/JorenSix/Olaf">Olaf</a> and <a href="https://github.com/decoded-cipher/chirp">chirp</a>. This one is a from-scratch learning build, not a new invention, and not a commercial service. It does not handle humming, big catalogues, big tempo or pitch changes, or heavily remixed audio. The 3 demo tracks are generated in code, so there are no copyright questions. Please only add songs you are allowed to use.</p>
+  </section>
+</main>
+<footer class="wrap muted small">Echo by Abhishek Kumar. Source on GitHub. Runs offline in your browser.</footer>
+<script type="module" src="app.js"></script>
+</body>
+</html>
